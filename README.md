@@ -22,38 +22,98 @@ This project provides a method to download view-only protected PDF files from Go
    - Copy and paste the entire script below into the console and press Enter.
 
 ```javascript
-const trustedTypesPolicy = window.trustedTypes.createPolicy('myTrustedTypesPolicy', {
+// === Drive/Viewer -> PDF (high-res, auto-orientation, fit-to-page) ===
+(() => {
+  const FIXED_PAGE_FORMAT = null; // e.g., [1920, 1080] for fixed 16:9; otherwise null
+  const MARGIN_PX = 0;
+
+  function makePdf() {
+    const jsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+    if (!jsPDF) throw new Error('jsPDF not available after load.');
+
+    // 1) Collect blob-backed images that represent pages
+    const imgs = Array.from(document.images).filter(img => /^blob:/.test(img.src));
+    if (!imgs.length) throw new Error('No blob-backed images found on the page.');
+
+    // Keep visual order
+    imgs.sort((a, b) => {
+      const ra = a.getBoundingClientRect();
+      const rb = b.getBoundingClientRect();
+      return ra.top - rb.top || ra.left - rb.left;
+    });
+
+    // 2) Initial page format/orientation
+    const first = imgs[0];
+    const fw = first.naturalWidth || first.width;
+    const fh = first.naturalHeight || first.height;
+    const firstOrientation = fw >= fh ? 'landscape' : 'portrait';
+    const baseFormat = Array.isArray(FIXED_PAGE_FORMAT) ? FIXED_PAGE_FORMAT : [fw, fh];
+
+    const pdf = new jsPDF({ orientation: firstOrientation, unit: 'px', format: baseFormat });
+
+    // 3) Canvas for high-quality capture
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.imageSmoothingEnabled = false;
+
+    imgs.forEach((img, i) => {
+      const w = img.naturalWidth || img.width;
+      const h = img.naturalHeight || img.height;
+
+      if (i > 0) {
+        const pageFormat = Array.isArray(FIXED_PAGE_FORMAT) ? FIXED_PAGE_FORMAT : [w, h];
+        const orient = (pageFormat[0] >= pageFormat[1]) ? 'landscape' : 'portrait';
+        pdf.addPage(pageFormat, orient);
+      }
+
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+
+      const maxW = pageW - MARGIN_PX * 2;
+      const maxH = pageH - MARGIN_PX * 2;
+
+      const scale = Math.min(maxW / w, maxH / h);
+      const drawW = Math.floor(w * scale);
+      const drawH = Math.floor(h * scale);
+
+      const x = (pageW - drawW) / 2;
+      const y = (pageH - drawH) / 2;
+
+      canvas.width = w;
+      canvas.height = h;
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const imgData = canvas.toDataURL('image/jpeg', 1.0);
+      pdf.addImage(imgData, 'JPEG', x, y, drawW, drawH);
+    });
+
+    pdf.save('download.pdf');
+  }
+
+  // If jsPDF is already present, use it; otherwise load once.
+  if (window.jspdf?.jsPDF || window.jsPDF) {
+    try { makePdf(); } catch (e) { console.error(e); }
+    return;
+  }
+
+  // Trusted Types-safe loader
+  const ttPolicy = window.trustedTypes?.createPolicy?.('myTrustedTypesPolicy', {
     createScriptURL: (input) => input
-});
+  });
 
-let jspdfSrc = trustedTypesPolicy.createScriptURL('https://cdnjs.cloudflare.com/ajax/libs/jspdf/1.5.3/jspdf.debug.js');
+  const url = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  const safeUrl = ttPolicy ? ttPolicy.createScriptURL(url) : url;
 
-let jspdf = document.createElement("script");
+  const tag = document.createElement('script');
+  tag.onload = () => {
+    try { makePdf(); } catch (e) { console.error('Error generating PDF:', e); }
+  };
+  tag.onerror = () => console.error('Failed to load jsPDF from CDN.');
+  tag.src = safeUrl;
+  document.body.appendChild(tag);
+})();
 
-jspdf.onload = function () {
-    try {
-        let pdf = new jsPDF();
-        let elements = document.getElementsByTagName("img");
-        for (let img of elements) {
-            if (!/^blob:/.test(img.src)) continue;
-
-            let canvasElement = document.createElement('canvas');
-            let con = canvasElement.getContext("2d");
-            canvasElement.width = img.width;
-            canvasElement.height = img.height;
-            con.drawImage(img, 0, 0, img.width, img.height);
-            let imgData = canvasElement.toDataURL("image/jpeg", 1.0);
-            pdf.addImage(imgData, 'JPEG', 0, 0);
-            pdf.addPage();
-        }
-        pdf.save("download.pdf");
-    } catch (error) {
-        console.error("Error generating PDF:", error);
-    }
-};
-
-jspdf.src = jspdfSrc;
-document.body.appendChild(jspdf);
 ```
 
 3. **Download the PDF:** The script will generate a PDF file containing the images from the Google Drive PDF and prompt you to download it.
